@@ -1,0 +1,15 @@
+.bloop
+.bsp
+.metals
+.vscode
+.env
+
+.idea
+*.class
+*.log
+
+target
+
+project/metals.sbt
+project/project
+project/.bloop
