@@ -9,16 +9,19 @@ import org.apache.kafka.common.errors.TopicExistsException
 import org.apache.kafka.streams._
 import org.apache.kafka.streams.kstream._
 import org.apache.kafka.common.serialization.Serdes
+import org.apache.kafka.streams.state.KeyValueStore
+import org.apache.kafka.common.config.TopicConfig
 import java.util.Properties
 import scala.util.Random
+import scala.jdk.CollectionConverters._
 
-object BasicStreams extends IOApp.Simple {
+object KTableExample extends IOApp.Simple {
 
   // Constants
-  val applicationId = "basic-streams"
+  val applicationId = "ktable-example"
   val bootstrapServers = "0.0.0.0:9092"
-  val inputTopicName = "basic-streams-in-topic"
-  val outputTopicName = "basic-streams-out-topic"
+  val inputTopicName = "ktable-example-in-topic"
+  val outputTopicName = "ktable-example-out-topic"
   val targetSubstring = "orderNumber-"
 
   def run: IO[Unit] = {
@@ -27,35 +30,34 @@ object BasicStreams extends IOApp.Simple {
     props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
 
     val builder = new StreamsBuilder
-
-    val populate = populateStream(chunkSize = 5).take(25).compile.drain
-
+    
     adminResource.use { admin => 
-      setupTopic(admin, inputTopicName) >> 
+      setupTopic(admin, inputTopicName) >>
       setupTopic(admin, outputTopicName) >>
-      populate >> 
+      populateStream.compile.drain >>
       IO {
         processStream(builder).to(
           outputTopicName,
           Produced.`with`(Serdes.String, Serdes.String)
         )
         new KafkaStreams(builder.build, props).start()
-      }
+      }  
     }
   }
 
   def processStream(builder: StreamsBuilder): KStream[String, String] = {
-    val inStream = builder.stream(
-      inputTopicName, 
-      Consumed.`with`(Serdes.String, Serdes.String)
-    )
+    val ktable: KTable[String, String] = 
+      builder.table(
+        inputTopicName,
+        Consumed.`with`(Serdes.String, Serdes.String)
+      )
 
-    inStream
-      .peek { (k, v) => println(s"Before processing. key: $k . value: $v") }
-      .filter { (_, v) => v.contains(targetSubstring) }
+    ktable
+      .filter { (k, v) => v.contains(targetSubstring) }
       .mapValues { v => v.substring(v.indexOf("-") + 1) }
-      .filter { (_, v) => v.toLong > 1000 }
-      .peek { (k, v) => println(s"After processing. key: $k . value: $v") }
+      .filter { (k, v) => v.toLong > 1000 }
+      .toStream()
+      .peek { (k, v) => println(s"Outgoing Record. k: $k, v: $v") }
   }
 
   val adminResource: Resource[IO, KafkaAdminClient[IO]] = 
@@ -68,11 +70,16 @@ object BasicStreams extends IOApp.Simple {
     topicName: String
   ): IO[Unit] = 
     admin
-      .createTopic(new NewTopic(
-        topicName,
-        1,
-        1.toShort
-      ))
+      .createTopic(
+        new NewTopic(topicName, 1, 1.toShort)
+          .configs(
+            Map
+              .from(List(
+                TopicConfig.CLEANUP_POLICY_CONFIG -> TopicConfig.CLEANUP_POLICY_COMPACT
+              ))
+              .asJava
+          )
+      )
       .recoverWith {
         // If the topic already exists, we just continue
         case _: TopicExistsException => IO.unit
@@ -81,26 +88,27 @@ object BasicStreams extends IOApp.Simple {
   /*
     Fill the input topic with random test data
   */
-  def populateStream(
-    chunkSize: Int
-  ): Stream[IO, ProducerResult[Unit,String,String]] = {
+  def populateStream: Stream[IO, ProducerResult[Unit,String,String]] = {
     val settings = 
       ProducerSettings[IO, String, String]
         .withBootstrapServers(bootstrapServers)
 
-    def randomIntStream: Stream[IO, Int] = 
-      Stream(Random.between(0, 100000)) ++ randomIntStream
-
-    randomIntStream
-      .map { i => 
+    val ids = List.fill(6) { Random.between(980, 20000) }
+    val records = ids.flatMap { id => 
+      def newRecord = {
         val prefix = Random.alphanumeric.take(4).mkString
-        val end = if (Random.nextDouble > 0.6) s"$targetSubstring$i" else ""
-        val key = s"$prefix--$i"
-        val value = prefix + end
-
-        ProducerRecord(inputTopicName, key, value)
+        val end = if (Random.nextDouble > 0.6) s"$targetSubstring$id" else s"-$id"
+        ProducerRecord(inputTopicName, id.toString, prefix + end)  
       }
-      .chunkN(chunkSize, allowFewer = true)
+
+      List.fill(4) { newRecord }
+    }
+
+    Stream
+      .fromIterator[IO](
+        Random.shuffle(records).iterator, records.size
+      )
+      .chunkAll
       .map(ProducerRecords.chunk(_))
       .through(KafkaProducer.pipe(settings))
   }
