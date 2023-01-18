@@ -8,9 +8,10 @@ import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.common.errors.TopicExistsException
 import org.apache.kafka.streams._
 import org.apache.kafka.streams.kstream._
-import org.apache.kafka.common.serialization.Serdes
 import org.apache.kafka.streams.state.KeyValueStore
+import org.apache.kafka.common.serialization.Serdes
 import org.apache.kafka.common.config.TopicConfig
+import org.apache.kafka.common.utils.Bytes
 import java.util.Properties
 import scala.util.Random
 import scala.jdk.CollectionConverters._
@@ -49,7 +50,9 @@ object KTableExample extends IOApp.Simple {
     val ktable: KTable[String, String] = 
       builder.table(
         inputTopicName,
-        Consumed.`with`(Serdes.String, Serdes.String)
+        Materialized.as[String, String, KeyValueStore[Bytes, Array[Byte]]]("ktable-store")
+          .withKeySerde(Serdes.String)
+          .withValueSerde(Serdes.String)
       )
 
     ktable
