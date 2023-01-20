@@ -15,6 +15,7 @@ object Dependencies {
 
     val kafkaClients = "org.apache.kafka" % "kafka-clients" % Version.kafka
     val kafkaStreams = "org.apache.kafka" % "kafka-streams" % Version.kafka
+    val kafkaStreamsScala = "org.apache.kafka" %% "kafka-streams-scala" % Version.kafka
 
     val fs2Kafka = "com.github.fd4s" %% "fs2-kafka" % Version.fs2kafka
     val fs2KafkaVulcan = "com.github.fd4s" %% "fs2-kafka-vulcan" % Version.fs2kafka

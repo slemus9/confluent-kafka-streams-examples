@@ -6,11 +6,15 @@ import fs2.Stream
 import fs2.kafka._
 import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.common.errors.TopicExistsException
-import org.apache.kafka.streams._
-import org.apache.kafka.streams.kstream._
-import org.apache.kafka.common.serialization.Serdes
+import org.apache.kafka.streams.{ Topology, StreamsConfig, KafkaStreams }
+import org.apache.kafka.streams.scala.serialization.Serdes._
+import org.apache.kafka.streams.scala.serialization.Serdes
+import org.apache.kafka.streams.scala.ImplicitConversions._
+import org.apache.kafka.streams.scala.StreamsBuilder
+import org.apache.kafka.streams.scala.kstream._
 import java.util.Properties
 import scala.util.Random
+import scala.concurrent.duration._
 
 object BasicStreams extends IOApp.Simple {
 
@@ -27,6 +31,7 @@ object BasicStreams extends IOApp.Simple {
     props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
 
     val builder = new StreamsBuilder
+    processStream(builder).to(outputTopicName)
 
     val populate = populateStream(chunkSize = 5).take(25).compile.drain
 
@@ -34,21 +39,16 @@ object BasicStreams extends IOApp.Simple {
       setupTopic(admin, inputTopicName) >> 
       setupTopic(admin, outputTopicName) >>
       populate >> 
-      IO {
-        processStream(builder).to(
-          outputTopicName,
-          Produced.`with`(Serdes.String, Serdes.String)
-        )
-        new KafkaStreams(builder.build, props).start()
-      }
+      KafkaStreamsApp.start[IO](
+        builder.build(),
+        props,
+        2.seconds
+      )
     }
   }
 
   def processStream(builder: StreamsBuilder): KStream[String, String] = {
-    val inStream = builder.stream(
-      inputTopicName, 
-      Consumed.`with`(Serdes.String, Serdes.String)
-    )
+    val inStream = builder.stream[String, String](inputTopicName)
 
     inStream
       .peek { (k, v) => println(s"Before processing. key: $k . value: $v") }

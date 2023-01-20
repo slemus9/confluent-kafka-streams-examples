@@ -6,5 +6,6 @@ libraryDependencies ++= Seq(
   Library.catsEffect,
   Library.kafkaClients,
   Library.kafkaStreams,
+  Library.kafkaStreamsScala,
   Library.fs2Kafka
 )

@@ -6,15 +6,17 @@ import fs2.Stream
 import fs2.kafka._
 import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.common.errors.TopicExistsException
-import org.apache.kafka.streams._
-import org.apache.kafka.streams.kstream._
-import org.apache.kafka.streams.state.KeyValueStore
-import org.apache.kafka.common.serialization.Serdes
+import org.apache.kafka.streams.{ Topology, StreamsConfig, KafkaStreams }
+import org.apache.kafka.streams.scala.serialization.Serdes._
+import org.apache.kafka.streams.scala.serialization.Serdes
+import org.apache.kafka.streams.scala.ImplicitConversions._
+import org.apache.kafka.streams.scala.StreamsBuilder
+import org.apache.kafka.streams.scala.kstream._
 import org.apache.kafka.common.config.TopicConfig
-import org.apache.kafka.common.utils.Bytes
 import java.util.Properties
 import scala.util.Random
 import scala.jdk.CollectionConverters._
+import scala.concurrent.duration._
 
 object KTableExample extends IOApp.Simple {
 
@@ -31,18 +33,17 @@ object KTableExample extends IOApp.Simple {
     props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
 
     val builder = new StreamsBuilder
+    processStream(builder).to(outputTopicName)
     
     adminResource.use { admin => 
       setupTopic(admin, inputTopicName) >>
       setupTopic(admin, outputTopicName) >>
       populateStream.compile.drain >>
-      IO {
-        processStream(builder).to(
-          outputTopicName,
-          Produced.`with`(Serdes.String, Serdes.String)
-        )
-        new KafkaStreams(builder.build, props).start()
-      }  
+      KafkaStreamsApp.start[IO](
+        builder.build(),
+        props,
+        2.seconds
+      )
     }
   }
 
@@ -50,16 +51,14 @@ object KTableExample extends IOApp.Simple {
     val ktable: KTable[String, String] = 
       builder.table(
         inputTopicName,
-        Materialized.as[String, String, KeyValueStore[Bytes, Array[Byte]]]("ktable-store")
-          .withKeySerde(Serdes.String)
-          .withValueSerde(Serdes.String)
+        Materialized.as("ktable-store")
       )
 
     ktable
       .filter { (k, v) => v.contains(targetSubstring) }
       .mapValues { v => v.substring(v.indexOf("-") + 1) }
       .filter { (k, v) => v.toLong > 1000 }
-      .toStream()
+      .toStream
       .peek { (k, v) => println(s"Outgoing Record. k: $k, v: $v") }
   }
 
