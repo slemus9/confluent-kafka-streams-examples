@@ -34,7 +34,7 @@ object KTableExample extends IOApp.Simple {
 
     val builder = new StreamsBuilder
     processStream(builder).to(outputTopicName)
-    
+
     adminResource.use { admin => 
       setupTopic(admin, inputTopicName) >>
       setupTopic(admin, outputTopicName) >>
