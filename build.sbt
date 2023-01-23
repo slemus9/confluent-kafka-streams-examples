@@ -10,5 +10,8 @@ libraryDependencies ++= Seq(
   Library.kafkaStreams,
   Library.kafkaStreamsScala,
   Library.fs2Kafka,
-  Library.fs2KafkaVulcan
+  Library.fs2KafkaVulcan,
+  Library.circeCore,
+  Library.circeGeneric,
+  Library.circeParser
 )

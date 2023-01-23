@@ -2,24 +2,85 @@ package example
 
 import java.util.UUID
 import java.time.{ Instant, ZoneOffset }
+import scala.collection.JavaConverters._
+import scala.jdk.DurationConverters._
+import scala.concurrent.duration._
+import io.circe.generic.semiauto._
+import io.circe.{ Encoder, Decoder }
 import cats.syntax.all._
 import cats.effect.Sync
-import vulcan.Codec
 import fs2.kafka.{ Serializer, Deserializer }
+import serdes.circe._
+import org.apache.kafka.streams.scala.ImplicitConversions._
+import org.apache.kafka.streams.scala.serialization.Serdes._
+import org.apache.kafka.streams.scala.serialization.Serdes
+import org.apache.kafka.common.serialization.Serde
+import org.apache.kafka.streams.scala.StreamsBuilder
+import io.confluent.kafka.serializers.KafkaAvroSerializer
+import io.confluent.kafka.serializers.KafkaAvroDeserializer
+import org.apache.kafka.streams.scala.kstream._
+import org.apache.kafka.streams.kstream.JoinWindows
 
 object JoinsExample {
 
+  import domain._
+  
+  val builder = new StreamsBuilder
+
+  val applianceStream: KStream[UUID, ApplianceOrder] =
+    builder.stream(config.applianceTopic)
+
+  val electronicStream: KStream[UUID, ElectronicOrder] =
+    builder.stream(config.electronicTopic)
+
+  val userTable: KTable[UUID, User] =
+    builder.table(
+      config.userTopic,
+      Materialized.as("user-store")
+    )
+
+  val joinWindow = JoinWindows.ofTimeDifferenceWithNoGrace(
+    30.minutes.toJava
+  )
+
+  val combinedStream: KStream[UUID, CombinedOrder] = 
+    electronicStream
+      .join(applianceStream)(
+        CombinedOrder.fromOrder(_, _), 
+        joinWindow
+      )
+      
+  val combinedWithUserStream: KStream[UUID, UserCombinedOrder] =
+    combinedStream
+      .leftJoin(userTable)(
+        UserCombinedOrder.apply
+      )
+}
+
+object config {
+
+  val bootstrapServers = "0.0.0.0:9092"
+  val schemaRegistryUri = "http://0.0.0.0:8081"
+  val userTopic = "user-topic"
+  val applianceTopic = "appliance-order-topic"
+  val electronicTopic = "electronic-order-topic"
+  val combinedTopic = "combined-order-topic"  
+  val userCombinedTopic = "user-combined-order-topic"
 }
 
 object domain {
 
   final case class User(
+    id: UUID,
     userName: String
   ) 
   
   object User {
-    implicit val avroCodec: Codec[User] = 
-      Codec[String].imap { User(_) } { _.userName }
+    implicit val jsonEncoder: Encoder[User] = 
+      deriveEncoder
+
+    implicit val jsonDecoder: Decoder[User] =
+      deriveDecoder
   }
 
   final case class ApplianceOrder(
@@ -30,19 +91,11 @@ object domain {
   )
 
   object ApplianceOrder {
-    implicit val avroCodec: Codec[ApplianceOrder] =
-      Codec.record(
-        name = "ApplianceOrder",
-        namespace = "common.domain.event",
-        doc = "An appliance order".some
-      ) { field => 
-        (
-          field("id", _.id),
-          field("itemId", _.itemId),
-          field("quantity", _.quantity),
-          field("date", _.date)
-        ).mapN { ApplianceOrder.apply }
-      }
+    implicit val jsonEncoder: Encoder[ApplianceOrder] = 
+      deriveEncoder
+
+    implicit val jsonDecoder: Decoder[ApplianceOrder] =
+      deriveDecoder
   }
 
   final case class ElectronicOrder(
@@ -53,19 +106,11 @@ object domain {
   )
 
   object ElectronicOrder {
-    implicit val avroCodec: Codec[ElectronicOrder] =
-      Codec.record(
-        name = "ElectronicOrder",
-        namespace = "common.domain.event",
-        doc = "An electronic order".some
-      ) { field => 
-        (
-          field("id", _.id),
-          field("itemId", _.itemId),
-          field("quantity", _.quantity),
-          field("date", _.date)
-        ).mapN { ElectronicOrder.apply }
-      }
+    implicit val jsonEncoder: Encoder[ElectronicOrder] =
+      deriveEncoder
+
+    implicit val jsonDecoder: Decoder[ElectronicOrder] =
+      deriveDecoder
   }
 
   final case class CombinedOrder(
@@ -77,28 +122,25 @@ object domain {
 
   object CombinedOrder {
 
+    implicit val jsonEncoder: Encoder[CombinedOrder] =
+      deriveEncoder
+
+    implicit val jsonDecoder: Decoder[CombinedOrder] =
+      deriveDecoder
+
     def fromOrder(
-      applianceOrder: ApplianceOrder,
-      electronicOrder: ElectronicOrder
+      electronicOrder: ElectronicOrder,
+      applianceOrder: ApplianceOrder
     ) = CombinedOrder(
       applianceOrder.id,
       electronicOrder.id,
       applianceOrder.itemId,
       Instant.now()
     )
-
-    implicit val avroCodec: Codec[CombinedOrder] =
-      Codec.record(
-        name = "CombinedOrder",
-        namespace = "common.domain.event",
-        doc = "A combination of an appliance and an electronic order".some
-      ) { field =>
-        (
-          field("applianceOrderId", _.applianceOrderId),
-          field("electronicOrderId", _.electronicOrderId),
-          field("itemId", _.itemId),
-          field("date", _.date)
-        ).mapN { CombinedOrder.apply }
-      }
   }
+
+  final case class UserCombinedOrder(
+    order: CombinedOrder,
+    user: User
+  )
 }
