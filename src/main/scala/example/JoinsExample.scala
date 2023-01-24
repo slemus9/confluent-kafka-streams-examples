@@ -6,11 +6,14 @@ import java.time.{ Instant, ZoneOffset }
 import scala.collection.JavaConverters._
 import scala.jdk.DurationConverters._
 import scala.concurrent.duration._
+import scala.util.Random
+import io.circe.syntax._
 import io.circe.generic.semiauto._
 import io.circe.{ Encoder, Decoder }
 import cats.syntax.all._
 import cats.effect.{ IO, IOApp, Sync, Resource}
-import fs2.kafka.{ KafkaAdminClient, AdminClientSettings }
+import fs2.Stream
+import fs2.kafka._
 import serdes.circe._
 import org.apache.kafka.streams.scala.ImplicitConversions._
 import org.apache.kafka.streams.scala.serialization.Serdes._
@@ -25,6 +28,7 @@ import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.common.config.TopicConfig
 import org.apache.kafka.streams.StreamsConfig
 import org.apache.kafka.streams.Topology
+import org.apache.kafka.common.errors.TopicExistsException
 
 object JoinsExample extends IOApp.Simple {
 
@@ -45,7 +49,7 @@ object JoinsExample extends IOApp.Simple {
     )
 
   val joinWindow = JoinWindows.ofTimeDifferenceWithNoGrace(
-    30.minutes.toJava
+    config.joinWindowDuration.toJava
   )
 
   val combinedStream: KStream[UUID, CombinedOrder] = 
@@ -54,14 +58,7 @@ object JoinsExample extends IOApp.Simple {
         CombinedOrder.fromOrder(_, _), 
         joinWindow
       )
-      
-  val combinedWithUserStream: KStream[UUID, UserCombinedOrder] =
-    combinedStream
-      .leftJoin(userTable)(
-        UserCombinedOrder.apply
-      )
       .peek { (_, order) => println(order) }
-
   
 
   def run: IO[Unit] = {
@@ -82,9 +79,9 @@ object JoinsExample extends IOApp.Simple {
       }
 
     val makeTopology: IO[Topology] = IO {
-      combinedWithUserStream.to(config.userCombinedTopic)
+      combinedStream.to(config.userCombinedTopic)
       builder.build()
-    }.flatTap { topo => IO.println(topo.describe()) }
+    }
 
     val userTableTopic = 
       new NewTopic(
@@ -99,7 +96,12 @@ object JoinsExample extends IOApp.Simple {
     adminResource.use { admin => 
       admin
         .createTopics(userTableTopic :: simpleTopics)
+        .recoverWith {
+          _: TopicExistsException => IO.unit
+        }
         .flatMap { _ => makeTopology }
+        .flatTap { topo => IO.println(topo.describe()) }
+        .flatTap { _ => populateStream.compile.drain }
         .void
     }
   }
@@ -108,6 +110,80 @@ object JoinsExample extends IOApp.Simple {
     KafkaAdminClient.resource(
       AdminClientSettings(config.bootstrapServers)
     )
+
+  def populateStream: Stream[IO, Unit] = {
+    val applianceProducerSettings = 
+      ProducerSettings[IO, UUID, ApplianceOrder]
+        .withBootstrapServers(config.bootstrapServers)
+
+    val electronicProducerSettings =
+      ProducerSettings[IO, UUID, ElectronicOrder]
+        .withBootstrapServers(config.bootstrapServers)
+
+
+    def itemIds: List[UUID] = List.fill(20) { UUID.randomUUID }
+
+    val applianceOrders = itemIds.map { id => 
+      ApplianceOrder(
+        id,
+        UUID.randomUUID(),
+        Random.between(1, 11),
+        Instant.now()
+      )
+    }
+
+    val electronicOrders = Random.shuffle(
+      applianceOrders.map { o => 
+        ElectronicOrder(o.id, o.itemId, o.quantity, o.date)  
+      }
+    )
+
+    val sendApplianceOrders: Stream[IO, Unit] = 
+      Stream
+        .fromIterator[IO](applianceOrders.iterator, applianceOrders.size)
+        .map { o => 
+          ProducerRecord(config.applianceTopic, o.id, o)  
+        }
+        .chunkAll
+        .map(ProducerRecords.chunk(_))
+        .through(KafkaProducer.pipe(applianceProducerSettings))
+        .debug()
+        .void
+
+    val sendElectronicOrders: Stream[IO, Unit] = {
+      val (ordersBefore, ordersAfter) = electronicOrders.splitAt(10)
+
+      val sendOrdersBefore = 
+        Stream
+          .fromIterator[IO](ordersBefore.iterator, ordersBefore.size)
+          .map { o => 
+            ProducerRecord(config.electronicTopic, o.id, o)  
+          }
+          .chunkAll
+          .map(ProducerRecords.chunk(_))
+          .through(KafkaProducer.pipe(electronicProducerSettings))
+          .debug()
+          .void
+
+      val sendOrdersAfter = 
+        Stream
+          .fromIterator[IO](ordersAfter.iterator, ordersAfter.size)
+          .map { o => 
+            ProducerRecord(config.electronicTopic, o.id, o)  
+          }
+          .chunkAll
+          .map(ProducerRecords.chunk(_))
+          .through(KafkaProducer.pipe(electronicProducerSettings))
+          .debug()
+          .void
+
+      sendOrdersBefore ++ 
+      Stream.sleep[IO](config.joinWindowDuration) ++
+      sendOrdersAfter
+    }
+
+    sendElectronicOrders.concurrently(sendApplianceOrders)
+  }
 }
 
 object config {
@@ -120,6 +196,7 @@ object config {
   val electronicTopic = "electronic-order-topic"
   val combinedTopic = "combined-order-topic"  
   val userCombinedTopic = "user-combined-order-topic"
+  val joinWindowDuration = 5.seconds
 }
 
 object domain {
@@ -150,6 +227,9 @@ object domain {
 
     implicit val jsonDecoder: Decoder[ApplianceOrder] =
       deriveDecoder
+
+    implicit def serializer[F[_] : Sync]: Serializer[F, ApplianceOrder] = 
+      Serializer.lift { _.asJson.noSpaces.getBytes.pure }
   }
 
   final case class ElectronicOrder(
@@ -165,6 +245,9 @@ object domain {
 
     implicit val jsonDecoder: Decoder[ElectronicOrder] =
       deriveDecoder
+
+    implicit def serializer[F[_] : Sync]: Serializer[F, ElectronicOrder] = 
+      Serializer.lift { _.asJson.noSpaces.getBytes.pure }
   }
 
   final case class CombinedOrder(
