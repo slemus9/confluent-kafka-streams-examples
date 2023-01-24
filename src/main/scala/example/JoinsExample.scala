@@ -1,6 +1,7 @@
 package example
 
 import java.util.UUID
+import java.util.Properties
 import java.time.{ Instant, ZoneOffset }
 import scala.collection.JavaConverters._
 import scala.jdk.DurationConverters._
@@ -8,8 +9,8 @@ import scala.concurrent.duration._
 import io.circe.generic.semiauto._
 import io.circe.{ Encoder, Decoder }
 import cats.syntax.all._
-import cats.effect.Sync
-import fs2.kafka.{ Serializer, Deserializer }
+import cats.effect.{ IO, IOApp, Sync, Resource}
+import fs2.kafka.{ KafkaAdminClient, AdminClientSettings }
 import serdes.circe._
 import org.apache.kafka.streams.scala.ImplicitConversions._
 import org.apache.kafka.streams.scala.serialization.Serdes._
@@ -20,8 +21,12 @@ import io.confluent.kafka.serializers.KafkaAvroSerializer
 import io.confluent.kafka.serializers.KafkaAvroDeserializer
 import org.apache.kafka.streams.scala.kstream._
 import org.apache.kafka.streams.kstream.JoinWindows
+import org.apache.kafka.clients.admin.NewTopic
+import org.apache.kafka.common.config.TopicConfig
+import org.apache.kafka.streams.StreamsConfig
+import org.apache.kafka.streams.Topology
 
-object JoinsExample {
+object JoinsExample extends IOApp.Simple {
 
   import domain._
   
@@ -55,10 +60,59 @@ object JoinsExample {
       .leftJoin(userTable)(
         UserCombinedOrder.apply
       )
+      .peek { (_, order) => println(order) }
+
+  
+
+  def run: IO[Unit] = {
+    val props = new Properties
+    props.put(StreamsConfig.APPLICATION_ID_CONFIG, config.applicationId)
+    props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServers)
+
+    
+    val simpleTopics = 
+      List(
+        config.applianceTopic,
+        config.electronicTopic,
+        config.combinedTopic,
+        config.userCombinedTopic
+      )
+      .map { name => 
+        new NewTopic(name, 1, 1.toShort)  
+      }
+
+    val makeTopology: IO[Topology] = IO {
+      combinedWithUserStream.to(config.userCombinedTopic)
+      builder.build()
+    }.flatTap { topo => IO.println(topo.describe()) }
+
+    val userTableTopic = 
+      new NewTopic(
+        config.userTopic,
+        1,
+        1.toShort
+      )
+      .configs(Map.from(List(
+        TopicConfig.CLEANUP_POLICY_CONFIG -> TopicConfig.CLEANUP_POLICY_COMPACT
+      )).asJava)
+    
+    adminResource.use { admin => 
+      admin
+        .createTopics(userTableTopic :: simpleTopics)
+        .flatMap { _ => makeTopology }
+        .void
+    }
+  }
+
+  val adminResource: Resource[IO, KafkaAdminClient[IO]] = 
+    KafkaAdminClient.resource(
+      AdminClientSettings(config.bootstrapServers)
+    )
 }
 
 object config {
 
+  val applicationId = "joins-example"
   val bootstrapServers = "0.0.0.0:9092"
   val schemaRegistryUri = "http://0.0.0.0:8081"
   val userTopic = "user-topic"
@@ -142,5 +196,14 @@ object domain {
   final case class UserCombinedOrder(
     order: CombinedOrder,
     user: User
-  )
+  ) 
+  
+  object UserCombinedOrder {
+
+    implicit val jsonEncoder: Encoder[UserCombinedOrder] =
+      deriveEncoder
+
+    implicit val jsonDecoder: Decoder[UserCombinedOrder] =
+      deriveDecoder    
+  }
 }
