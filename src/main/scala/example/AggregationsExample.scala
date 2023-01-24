@@ -30,12 +30,13 @@ object AggregationsExample extends IOApp.Simple {
   val electronicStream: KStream[UUID, ElectronicOrder] =
     builder.stream(config.electronicTopic)
 
-  val totalBoughtStream: KStream[UUID, Double] =
+  val totalBoughtStream: KStream[UUID, OrderTotal] =
     electronicStream
       .groupByKey
       .aggregate(0.0) { (key, order, total) => 
         order.price + total
       }
+      .mapValues(OrderTotal(_, _))
       .toStream
       .peek { (key, total) => println(s"key: $key, total: $total") }
 
@@ -61,7 +62,7 @@ object AggregationsExample extends IOApp.Simple {
         }
         .flatMap { _ => buildTopology }
         .flatTap { topo => IO.println(topo.describe()) }
-        .flatTap { _ => populateStream(20, 5).compile.drain }
+        .flatTap { _ => populateStream.compile.drain }
         .flatMap { topo => 
           KafkaStreamsApp.start[IO](topo, props, 2.seconds)
         }
@@ -74,27 +75,30 @@ object AggregationsExample extends IOApp.Simple {
       AdminClientSettings(config.bootstrapServers)
     ) 
 
-  def populateStream(numOrders: Int, chunkSize: Int): Stream[IO, Unit] = {
+  def populateStream: Stream[IO, Unit] = {
     val settings = 
       ProducerSettings[IO, UUID, ElectronicOrder]
         .withBootstrapServers(config.bootstrapServers)
 
-    def orders: Stream[IO, ElectronicOrder] = Stream(
-      ElectronicOrder(
-        UUID.randomUUID(),
-        Random.between(1.0, 101.0)
-      )
-    ) ++ orders
+    val orderIds: List[UUID] = List.fill(5) { UUID.randomUUID }
 
-    orders
-      .take(numOrders)
+    def makeOrder(id: UUID) = ElectronicOrder(
+      id, Random.between(1.0, 101.0)
+    )
+
+    def orders: List[ElectronicOrder] = 
+      Random.shuffle(
+        orderIds.flatMap { id => List.fill(4) { makeOrder(id) } }
+      )
+
+    Stream.fromIterator[IO](orders.iterator, orders.size)
       .map { o =>
         ProducerRecord(config.electronicTopic, o.id, o)  
       }
-      .chunkN(chunkSize, allowFewer = true)
+      .debug()
+      .chunkAll
       .map(ProducerRecords.chunk(_))
       .through(KafkaProducer.pipe(settings))
-      .debug()
       .void
   }
 
@@ -123,6 +127,22 @@ object AggregationsExample extends IOApp.Simple {
         deriveDecoder
 
       implicit def serializer[F[_] : Sync]: Serializer[F, ElectronicOrder] =
+        Serializer.lift { _.asJson.noSpaces.getBytes.pure }
+    }
+
+    final case class OrderTotal(
+      id: UUID,
+      total: Double
+    )
+
+    object OrderTotal {
+      implicit val jsonEncoder: Encoder[OrderTotal] =
+        deriveEncoder
+
+      implicit val jsonDecoder: Decoder[OrderTotal] =
+        deriveDecoder
+
+      implicit def serializer[F[_] : Sync]: Serializer[F, OrderTotal] =
         Serializer.lift { _.asJson.noSpaces.getBytes.pure }
     }
   }
