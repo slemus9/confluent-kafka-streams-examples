@@ -20,8 +20,6 @@ import org.apache.kafka.streams.scala.serialization.Serdes._
 import org.apache.kafka.streams.scala.serialization.Serdes
 import org.apache.kafka.common.serialization.Serde
 import org.apache.kafka.streams.scala.StreamsBuilder
-import io.confluent.kafka.serializers.KafkaAvroSerializer
-import io.confluent.kafka.serializers.KafkaAvroDeserializer
 import org.apache.kafka.streams.scala.kstream._
 import org.apache.kafka.streams.kstream.JoinWindows
 import org.apache.kafka.clients.admin.NewTopic
@@ -66,22 +64,20 @@ object JoinsExample extends IOApp.Simple {
     props.put(StreamsConfig.APPLICATION_ID_CONFIG, config.applicationId)
     props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServers)
 
+    val makeTopology: IO[Topology] = IO {
+      combinedStream.to(config.combinedTopic)
+      builder.build()
+    }
     
     val simpleTopics = 
       List(
         config.applianceTopic,
         config.electronicTopic,
-        config.combinedTopic,
-        config.userCombinedTopic
+        config.combinedTopic
       )
       .map { name => 
         new NewTopic(name, 1, 1.toShort)  
       }
-
-    val makeTopology: IO[Topology] = IO {
-      combinedStream.to(config.userCombinedTopic)
-      builder.build()
-    }
 
     val userTableTopic = 
       new NewTopic(
@@ -102,7 +98,9 @@ object JoinsExample extends IOApp.Simple {
         .flatMap { _ => makeTopology }
         .flatTap { topo => IO.println(topo.describe()) }
         .flatTap { _ => populateStream.compile.drain }
-        .void
+        .flatMap { topo => 
+          KafkaStreamsApp.start[IO](topo, props, 2.seconds)  
+        }
     }
   }
 

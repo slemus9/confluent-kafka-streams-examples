@@ -2,7 +2,7 @@ import Dependencies._
 
 ThisBuild / scalaVersion := "2.13.8"
 
-resolvers += "confluent" at "https://packages.confluent.io/maven/"
+//resolvers += "confluent" at "https://packages.confluent.io/maven/"
 
 libraryDependencies ++= Seq(
   Library.catsEffect,
@@ -10,7 +10,7 @@ libraryDependencies ++= Seq(
   Library.kafkaStreams,
   Library.kafkaStreamsScala,
   Library.fs2Kafka,
-  Library.fs2KafkaVulcan,
+  //Library.fs2KafkaVulcan,
   Library.circeCore,
   Library.circeGeneric,
   Library.circeParser
