@@ -17,8 +17,6 @@ import fs2.kafka._
 import serdes.circe._
 import org.apache.kafka.streams.scala.ImplicitConversions._
 import org.apache.kafka.streams.scala.serialization.Serdes._
-import org.apache.kafka.streams.scala.serialization.Serdes
-import org.apache.kafka.common.serialization.Serde
 import org.apache.kafka.streams.scala.StreamsBuilder
 import org.apache.kafka.streams.scala.kstream._
 import org.apache.kafka.streams.kstream.JoinWindows
@@ -182,109 +180,109 @@ object JoinsExample extends IOApp.Simple {
 
     sendElectronicOrders.concurrently(sendApplianceOrders)
   }
-}
 
-object config {
-
-  val applicationId = "joins-example"
-  val bootstrapServers = "0.0.0.0:9092"
-  val schemaRegistryUri = "http://0.0.0.0:8081"
-  val userTopic = "user-topic"
-  val applianceTopic = "appliance-order-topic"
-  val electronicTopic = "electronic-order-topic"
-  val combinedTopic = "combined-order-topic"  
-  val userCombinedTopic = "user-combined-order-topic"
-  val joinWindowDuration = 5.seconds
-}
-
-object domain {
-
-  final case class User(
-    id: UUID,
-    userName: String
-  ) 
+  object config {
   
-  object User {
-    implicit val jsonEncoder: Encoder[User] = 
-      deriveEncoder
-
-    implicit val jsonDecoder: Decoder[User] =
-      deriveDecoder
+    val applicationId = "joins-example"
+    val bootstrapServers = "0.0.0.0:9092"
+    val schemaRegistryUri = "http://0.0.0.0:8081"
+    val userTopic = "user-topic"
+    val applianceTopic = "appliance-order-topic"
+    val electronicTopic = "electronic-order-topic"
+    val combinedTopic = "combined-order-topic"  
+    val userCombinedTopic = "user-combined-order-topic"
+    val joinWindowDuration = 5.seconds
   }
-
-  final case class ApplianceOrder(
-    id: UUID,
-    itemId: UUID,
-    quantity: Int,
-    date: Instant
-  )
-
-  object ApplianceOrder {
-    implicit val jsonEncoder: Encoder[ApplianceOrder] = 
-      deriveEncoder
-
-    implicit val jsonDecoder: Decoder[ApplianceOrder] =
-      deriveDecoder
-
-    implicit def serializer[F[_] : Sync]: Serializer[F, ApplianceOrder] = 
-      Serializer.lift { _.asJson.noSpaces.getBytes.pure }
-  }
-
-  final case class ElectronicOrder(
-    id: UUID,
-    itemId: UUID,
-    quantity: Int,
-    date: Instant
-  )
-
-  object ElectronicOrder {
-    implicit val jsonEncoder: Encoder[ElectronicOrder] =
-      deriveEncoder
-
-    implicit val jsonDecoder: Decoder[ElectronicOrder] =
-      deriveDecoder
-
-    implicit def serializer[F[_] : Sync]: Serializer[F, ElectronicOrder] = 
-      Serializer.lift { _.asJson.noSpaces.getBytes.pure }
-  }
-
-  final case class CombinedOrder(
-    applianceOrderId: UUID,
-    electronicOrderId: UUID,
-    itemId: UUID,
-    date: Instant
-  )
-
-  object CombinedOrder {
-
-    implicit val jsonEncoder: Encoder[CombinedOrder] =
-      deriveEncoder
-
-    implicit val jsonDecoder: Decoder[CombinedOrder] =
-      deriveDecoder
-
-    def fromOrder(
-      electronicOrder: ElectronicOrder,
-      applianceOrder: ApplianceOrder
-    ) = CombinedOrder(
-      applianceOrder.id,
-      electronicOrder.id,
-      applianceOrder.itemId,
-      Instant.now()
+  
+  object domain {
+  
+    final case class User(
+      id: UUID,
+      userName: String
+    ) 
+    
+    object User {
+      implicit val jsonEncoder: Encoder[User] = 
+        deriveEncoder
+  
+      implicit val jsonDecoder: Decoder[User] =
+        deriveDecoder
+    }
+  
+    final case class ApplianceOrder(
+      id: UUID,
+      itemId: UUID,
+      quantity: Int,
+      date: Instant
     )
-  }
-
-  final case class UserCombinedOrder(
-    order: CombinedOrder,
-    user: User
-  ) 
   
-  object UserCombinedOrder {
-
-    implicit val jsonEncoder: Encoder[UserCombinedOrder] =
-      deriveEncoder
-
-    implicit val jsonDecoder: Decoder[UserCombinedOrder] =
-      deriveDecoder    
+    object ApplianceOrder {
+      implicit val jsonEncoder: Encoder[ApplianceOrder] = 
+        deriveEncoder
+  
+      implicit val jsonDecoder: Decoder[ApplianceOrder] =
+        deriveDecoder
+  
+      implicit def serializer[F[_] : Sync]: Serializer[F, ApplianceOrder] = 
+        Serializer.lift { _.asJson.noSpaces.getBytes.pure }
+    }
+  
+    final case class ElectronicOrder(
+      id: UUID,
+      itemId: UUID,
+      quantity: Int,
+      date: Instant
+    )
+  
+    object ElectronicOrder {
+      implicit val jsonEncoder: Encoder[ElectronicOrder] =
+        deriveEncoder
+  
+      implicit val jsonDecoder: Decoder[ElectronicOrder] =
+        deriveDecoder
+  
+      implicit def serializer[F[_] : Sync]: Serializer[F, ElectronicOrder] = 
+        Serializer.lift { _.asJson.noSpaces.getBytes.pure }
+    }
+  
+    final case class CombinedOrder(
+      applianceOrderId: UUID,
+      electronicOrderId: UUID,
+      itemId: UUID,
+      date: Instant
+    )
+  
+    object CombinedOrder {
+  
+      implicit val jsonEncoder: Encoder[CombinedOrder] =
+        deriveEncoder
+  
+      implicit val jsonDecoder: Decoder[CombinedOrder] =
+        deriveDecoder
+  
+      def fromOrder(
+        electronicOrder: ElectronicOrder,
+        applianceOrder: ApplianceOrder
+      ) = CombinedOrder(
+        applianceOrder.id,
+        electronicOrder.id,
+        applianceOrder.itemId,
+        Instant.now()
+      )
+    }
+  
+    final case class UserCombinedOrder(
+      order: CombinedOrder,
+      user: User
+    ) 
+    
+    object UserCombinedOrder {
+  
+      implicit val jsonEncoder: Encoder[UserCombinedOrder] =
+        deriveEncoder
+  
+      implicit val jsonDecoder: Decoder[UserCombinedOrder] =
+        deriveDecoder    
+    }
   }
 }
