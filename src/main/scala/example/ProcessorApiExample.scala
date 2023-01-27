@@ -22,6 +22,7 @@ import org.apache.kafka.common.serialization.Serdes
 import java.{util => ju}
 import org.apache.kafka.streams.state.StoreBuilder
 import org.apache.kafka.streams.Topology
+import org.apache.kafka.streams.processor.Punctuator
 
 object ProcessorApiExample {
 
@@ -33,22 +34,20 @@ object ProcessorApiExample {
 
     def get() = new Processor[String, ElectronicOrder, String, Double] {
 
-      var processorContext: ProcessorContext[String, Double] = _
       var store: KeyValueStore[String, Double] = _
 
       override def init(context: ProcessorContext[String, Double]): Unit = {
-        processorContext = context
-        store = processorContext.getStateStore(storeName)
-        processorContext.schedule(
+        store = context.getStateStore(storeName)
+        context.schedule(
           10.seconds.toJava,
           PunctuationType.STREAM_TIME,
-          forwardAll
+          forwardAll(context)
         )
       }
 
-      def forwardAll(timestamp: Long): Unit = 
-        store.all().asScala.foreach { p =>
-          processorContext.forward(new Record(
+      def forwardAll(context: ProcessorContext[String, Double]): Punctuator =
+        timestamp => store.all().asScala.foreach { p =>
+          context.forward(new Record(
             p.key,
             p.value,
             timestamp
