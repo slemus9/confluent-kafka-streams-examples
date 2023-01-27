@@ -23,20 +23,23 @@ import java.{util => ju}
 import org.apache.kafka.streams.state.StoreBuilder
 import org.apache.kafka.streams.Topology
 import org.apache.kafka.streams.processor.Punctuator
+import org.apache.kafka.streams.StreamsConfig
+import org.apache.kafka.clients.admin.NewTopic
+import org.apache.kafka.common.errors.TopicExistsException
 
-object ProcessorApiExample {
+object ProcessorApiExample extends IOApp.Simple {
 
   import domain._
 
   def totalPriceOrderProcessorSupplier(
     storeName: String
-  ) = new ProcessorSupplier[String, ElectronicOrder, String, Double] {
+  ) = new ProcessorSupplier[UUID, ElectronicOrder, UUID, Double] {
 
-    def get() = new Processor[String, ElectronicOrder, String, Double] {
+    def get() = new Processor[UUID, ElectronicOrder, UUID, Double] {
 
-      var store: KeyValueStore[String, Double] = _
+      var store: KeyValueStore[UUID, Double] = _
 
-      override def init(context: ProcessorContext[String, Double]): Unit = {
+      override def init(context: ProcessorContext[UUID, Double]): Unit = {
         store = context.getStateStore(storeName)
         context.schedule(
           10.seconds.toJava,
@@ -45,7 +48,7 @@ object ProcessorApiExample {
         )
       }
 
-      def forwardAll(context: ProcessorContext[String, Double]): Punctuator =
+      def forwardAll(context: ProcessorContext[UUID, Double]): Punctuator =
         timestamp => store.all().asScala.foreach { p =>
           context.forward(new Record(
             p.key,
@@ -54,7 +57,7 @@ object ProcessorApiExample {
           ))  
         }
 
-      def process(r: Record[String, ElectronicOrder]): Unit = {
+      def process(r: Record[UUID, ElectronicOrder]): Unit = {
         val key = r.key()
         val currentTotal = Option(store.get(key)).getOrElse(0.0)
         store.put(
@@ -70,7 +73,7 @@ object ProcessorApiExample {
 
   val totaPriceStoreBuilder = Stores.keyValueStoreBuilder(
     Stores.persistentKeyValueStore(config.storeName),
-    Serdes.String(),
+    Serdes.UUID(),
     Serdes.Double()
   )
 
@@ -101,6 +104,61 @@ object ProcessorApiExample {
     doubleSerde.serializer(),
     nodes.aggregatePrice // parent node
   )
+
+  def run: IO[Unit] = {
+    val props = new Properties
+    props.put(StreamsConfig.APPLICATION_ID_CONFIG, config.applicationId)
+    props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServers)
+
+    val topics = 
+      List(config.inputTopic, config.outputTopic)
+        .map { name => new NewTopic(name, 1, 1.toShort) }
+
+    adminResource.use { admin =>
+      admin
+        .createTopics(topics)
+        .recoverWith {
+          _: TopicExistsException => IO.unit
+        }
+        .flatMap { _ => IO.println(topology.describe()) }
+        .flatMap { _ => populateStream.compile.drain }
+        .flatMap { _ => 
+          KafkaStreamsApp.start[IO](topology, props, 2.seconds)
+        }
+    } 
+  }
+
+  val adminResource: Resource[IO, KafkaAdminClient[IO]] = 
+    KafkaAdminClient.resource(
+      AdminClientSettings(config.bootstrapServers)
+    ) 
+
+  def populateStream: Stream[IO, Unit] = {
+    val settings = 
+      ProducerSettings[IO, UUID, ElectronicOrder]
+        .withBootstrapServers(config.bootstrapServers)
+
+    val orderIds: List[UUID] = List.fill(5) { UUID.randomUUID }
+
+    def makeOrder(id: UUID) = ElectronicOrder(
+      id, Random.between(1.0, 101.0)
+    )
+
+    def orders: List[ElectronicOrder] = 
+      Random.shuffle(
+        orderIds.flatMap { id => List.fill(4) { makeOrder(id) } }
+      )
+
+    Stream.fromIterator[IO](orders.iterator, orders.size)
+      .map { o =>
+        ProducerRecord(config.inputTopic, o.id, o)  
+      }
+      .debug()
+      .chunkAll
+      .map(ProducerRecords.chunk(_))
+      .through(KafkaProducer.pipe(settings))
+      .void
+  }
 
   object nodes {
 
@@ -135,22 +193,6 @@ object ProcessorApiExample {
         deriveDecoder
 
       implicit def serializer[F[_] : Sync]: Serializer[F, ElectronicOrder] =
-        Serializer.lift { _.asJson.noSpaces.getBytes.pure }
-    }
-
-    final case class OrderTotal(
-      id: UUID,
-      total: Double
-    )
-
-    object OrderTotal {
-      implicit val jsonEncoder: Encoder[OrderTotal] =
-        deriveEncoder
-
-      implicit val jsonDecoder: Decoder[OrderTotal] =
-        deriveDecoder
-
-      implicit def serializer[F[_] : Sync]: Serializer[F, OrderTotal] =
         Serializer.lift { _.asJson.noSpaces.getBytes.pure }
     }
   }
