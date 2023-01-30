@@ -42,7 +42,8 @@ object KTableExample extends IOApp.Simple {
       KafkaStreamsApp.start[IO](
         builder.build(),
         props,
-        2.seconds
+        2.seconds,
+        none
       )
     }
   }

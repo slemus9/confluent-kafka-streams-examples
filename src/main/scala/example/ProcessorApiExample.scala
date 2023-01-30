@@ -123,7 +123,7 @@ object ProcessorApiExample extends IOApp.Simple {
         .flatMap { _ => IO.println(topology.describe()) }
         .flatMap { _ => populateStream.compile.drain }
         .flatMap { _ => 
-          KafkaStreamsApp.start[IO](topology, props, 2.seconds)
+          KafkaStreamsApp.start[IO](topology, props, 2.seconds, none)
         }
     } 
   }

@@ -7,16 +7,19 @@ import scala.jdk.DurationConverters._
 import cats.syntax.all._
 import cats.effect.{ Async, Resource, Deferred }
 import org.apache.kafka.streams.{ KafkaStreams, Topology }
+import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler
 import KafkaStreams.{State => KState}
 import cats.effect.kernel.Outcome.Succeeded
 import cats.effect.kernel.Outcome.Canceled
+import java.lang.Thread.UncaughtExceptionHandler
 
 object KafkaStreamsApp {
 
   def start[F[_]](
     topology: Topology, 
     properties: Properties,
-    closeAfter: FiniteDuration
+    closeAfter: FiniteDuration,
+    streamsUncaughtExceptionHandler: Option[StreamsUncaughtExceptionHandler]
   )(
     implicit F: Async[F]
   ) = 
@@ -37,9 +40,14 @@ object KafkaStreamsApp {
               cb(().asRight)
             case _ => ()
           }
-        
-          app.setUncaughtExceptionHandler { (_, e) => 
-            cb(e.asLeft)
+
+          streamsUncaughtExceptionHandler match {
+            case None => app.setUncaughtExceptionHandler { (_, e) => 
+              cb(e.asLeft)
+            }
+            case Some(handler) => app.setUncaughtExceptionHandler(
+              handler
+            ) 
           }
 
           app.start()

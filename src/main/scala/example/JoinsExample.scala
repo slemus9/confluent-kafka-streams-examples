@@ -97,7 +97,7 @@ object JoinsExample extends IOApp.Simple {
         .flatTap { topo => IO.println(topo.describe()) }
         .flatTap { _ => populateStream.compile.drain }
         .flatMap { topo => 
-          KafkaStreamsApp.start[IO](topo, props, 2.seconds)  
+          KafkaStreamsApp.start[IO](topo, props, 2.seconds, none)  
         }
     }
   }
